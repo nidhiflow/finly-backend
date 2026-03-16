@@ -1,0 +1,11 @@
+node_modules
+*.local
+.env
+.env.production
+.vscode
+.idea
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
