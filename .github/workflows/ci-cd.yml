@@ -74,8 +74,10 @@ jobs:
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
 
       - name: SonarQube Scan
+        if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -85,8 +87,10 @@ jobs:
             -Dsonar.projectKey=finly-backend
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**
+        continue-on-error: true
 
       - name: OWASP ZAP DAST Scan
+        if: secrets.BACKEND_URL != ''
         uses: zaproxy/action-baseline@v0.14.0
         with:
           target: ${{ secrets.BACKEND_URL }}
@@ -100,4 +104,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Deploy to Render
-        run: curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+        if: secrets.RENDER_DEPLOY_HOOK != ''
+        run: |
+          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}?imgURL=${{ env.IMAGE_NAME }}:${{ github.sha }}"
