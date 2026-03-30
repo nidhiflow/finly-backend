@@ -63,6 +63,22 @@ router.put('/:id', async (req, res) => {
     }
 });
 
+// GET /api/accounts/:id/linked-transactions — count of transactions using this account
+router.get('/:id/linked-transactions', async (req, res) => {
+    try {
+        const { rows: existing } = await pool.query('SELECT * FROM accounts WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+        if (existing.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const { rows } = await pool.query(
+            'SELECT COUNT(*) as count FROM transactions WHERE (account_id = $1 OR to_account_id = $1) AND user_id = $2',
+            [req.params.id, req.userId]
+        );
+        res.json({ count: parseInt(rows[0].count) });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // DELETE /api/accounts/:id
 router.delete('/:id', async (req, res) => {
     try {
@@ -73,16 +89,37 @@ router.delete('/:id', async (req, res) => {
             'SELECT COUNT(*) as count FROM transactions WHERE (account_id = $1 OR to_account_id = $1) AND user_id = $2',
             [req.params.id, req.userId]
         );
+        const count = parseInt(txCount[0].count);
+        const force = req.query.force === 'true';
 
-        if (parseInt(txCount[0].count) > 0) {
-            return res.status(400).json({ error: 'Cannot delete account with existing transactions. Delete transactions first.' });
+        if (count > 0 && !force) {
+            return res.status(400).json({
+                error: `This account has ${count} linked transaction(s). Use force=true to delete anyway.`,
+                linkedTransactions: count
+            });
         }
 
-        await pool.query('DELETE FROM accounts WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
-        res.json({ success: true });
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            if (count > 0) {
+                await client.query('DELETE FROM transactions WHERE (account_id = $1 OR to_account_id = $1) AND user_id = $2', [req.params.id, req.userId]);
+            }
+            await client.query('DELETE FROM accounts WHERE parent_id = $1 AND user_id = $2', [req.params.id, req.userId]);
+            await client.query('DELETE FROM accounts WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+
+        res.json({ success: true, deletedTransactions: count });
     } catch (err) {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
 
 export default router;
+
