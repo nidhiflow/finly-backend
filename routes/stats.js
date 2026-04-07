@@ -25,8 +25,9 @@ router.get('/summary', async (req, res) => {
 
         const income = parseFloat(incomeRows[0].total);
         const expense = parseFloat(expenseRows[0].total);
+        const savings = income - expense;
 
-        res.json({ income, expense, balance: income - expense, startDate: start, endDate: end });
+        res.json({ income, expense, expenses: expense, balance: income - expense, savings, startDate: start, endDate: end });
     } catch (err) {
         res.status(500).json({ error: 'Internal server error' });
     }

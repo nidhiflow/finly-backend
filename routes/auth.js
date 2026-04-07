@@ -480,21 +480,21 @@ router.put('/password', authenticateToken, async (req, res) => {
 // DELETE /api/auth/account — Delete user account and all data
 router.delete('/account', authenticateToken, async (req, res) => {
     try {
-        const { password } = req.body;
-
-        if (!password) {
-            return res.status(400).json({ error: 'Password is required to delete your account' });
-        }
+        const { password } = req.body || {};
 
         const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
         if (rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        const user = rows[0];
-        const validPassword = bcrypt.compareSync(password, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Incorrect password' });
+        // If password is provided, verify it (old frontend sends password)
+        // If not provided, allow deletion since user is already authenticated via JWT (new frontend)
+        if (password) {
+            const user = rows[0];
+            const validPassword = bcrypt.compareSync(password, user.password);
+            if (!validPassword) {
+                return res.status(401).json({ error: 'Incorrect password' });
+            }
         }
 
         // Delete user — cascading deletes will remove all related data
