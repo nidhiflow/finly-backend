@@ -17,7 +17,7 @@ async function getBalanceAccountId(client, accountId, userId) {
 // GET /api/transactions
 router.get('/', async (req, res) => {
     try {
-        const { startDate, endDate, categoryId, accountId, type, search, limit, offset } = req.query;
+        const { startDate, endDate, categoryId, accountId, type, search, limit, offset, is_recurring } = req.query;
         let query = `SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
                  a.name as account_name, a.icon as account_icon,
                  parent_acc.name as account_parent_name
@@ -35,6 +35,12 @@ router.get('/', async (req, res) => {
         if (accountId) { query += ` AND t.account_id = $${paramIndex++}`; params.push(accountId); }
         if (type) { query += ` AND t.type = $${paramIndex++}`; params.push(type); }
         if (search) { query += ` AND (t.note ILIKE $${paramIndex} OR c.name ILIKE $${paramIndex} OR a.name ILIKE $${paramIndex})`; params.push(`%${search}%`); paramIndex++; }
+        
+        if (is_recurring === 'true') {
+            query += ' AND t.repeat_group_id IS NOT NULL';
+        } else if (is_recurring === 'false') {
+            query += ' AND t.repeat_group_id IS NULL';
+        }
 
         query += ' ORDER BY t.date DESC, t.created_at DESC';
 
@@ -68,6 +74,34 @@ router.get('/upcoming-recurring', async (req, res) => {
         res.json(rows);
     } catch (err) {
         console.error('Upcoming recurring error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/transactions/recurring — fetch all recurring transactions
+router.get('/recurring', async (req, res) => {
+    try {
+        const { limit, offset } = req.query;
+        let query = `SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
+                     a.name as account_name, a.icon as account_icon,
+                     parent_acc.name as account_parent_name
+                     FROM transactions t
+                     LEFT JOIN categories c ON t.category_id = c.id
+                     LEFT JOIN accounts a ON t.account_id = a.id
+                     LEFT JOIN accounts parent_acc ON a.parent_id = parent_acc.id
+                     WHERE t.user_id = $1 AND t.repeat_group_id IS NOT NULL
+                     ORDER BY t.created_at DESC`;
+        
+        const params = [req.userId];
+        let paramIndex = 2;
+        
+        if (limit) { query += ` LIMIT $${paramIndex++}`; params.push(parseInt(limit)); }
+        if (offset) { query += ` OFFSET $${paramIndex++}`; params.push(parseInt(offset)); }
+
+        const { rows } = await pool.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        console.error('Recurring error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

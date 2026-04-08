@@ -17,7 +17,7 @@ router.get('/', async (req, res) => {
             where += ` AND month = $2`;
         }
         const { rows } = await pool.query(
-            `SELECT id, name, target_amount, current_amount, month, category_id, account_id, created_at
+            `SELECT *
              FROM savings_goals
              WHERE ${where}
              ORDER BY created_at DESC`,
@@ -82,11 +82,24 @@ router.get('/', async (req, res) => {
                 else tracking_mode = 'auto_category';
             }
 
+            // Fetch contributions
+            const { rows: contributions } = await pool.query(
+                `SELECT c.id, c.amount, c.date, c.note, a.name as "fromAccount" 
+                 FROM savings_goals_contributions c
+                 LEFT JOIN accounts a ON c.from_account_id = a.id
+                 WHERE c.goal_id = $1 ORDER BY c.created_at ASC`,
+                [r.id]
+            );
+
             return {
                 ...r,
                 target_amount: parseFloat(r.target_amount),
                 current_amount: currentAmount,
-                tracking_mode,
+                tracking_mode: tracking_mode !== 'manual' ? tracking_mode : r.tracking_mode || 'Manual',
+                contributions: contributions.map(c => ({
+                    ...c,
+                    amount: parseFloat(c.amount)
+                }))
             };
         }));
         res.json(goalsWithComputed);
@@ -98,16 +111,22 @@ router.get('/', async (req, res) => {
 // POST /api/savings-goals
 router.post('/', async (req, res) => {
     try {
-        const { name, target_amount, month, category_id, account_id } = req.body;
+        const { name, target_amount, month, category_id, account_id, emoji, color, status, notes, target_date, start_date, type, tracking_mode, carry_forward, linked_account } = req.body;
         const parsed = parseFloat(target_amount);
         if (!name || !target_amount || !Number.isFinite(parsed) || parsed <= 0) {
             return res.status(400).json({ error: 'Valid name and target amount are required' });
         }
         const id = uuidv4();
-        const params = [id, req.userId, name, parsed];
-        let columns = 'id, user_id, name, target_amount';
-        let values = '$1, $2, $3, $4';
-        let pos = 5;
+        const params = [
+            id, req.userId, name, parsed,
+            emoji || '🎯', color || '#7C5CFF', status || 'active', notes || null,
+            target_date || null, start_date || null, type || 'one-time', tracking_mode || 'Manual',
+            carry_forward !== undefined ? carry_forward : false, linked_account || null
+        ];
+        
+        let columns = 'id, user_id, name, target_amount, emoji, color, status, notes, target_date, start_date, type, tracking_mode, carry_forward, linked_account';
+        let values = '$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14';
+        let pos = 15;
         if (month) {
             columns += ', month';
             values += `, $${pos}`;
@@ -157,14 +176,32 @@ router.put('/:id', async (req, res) => {
         const current_amount = req.body.current_amount !== undefined ? parseFloat(req.body.current_amount) : parseFloat(existing.current_amount || 0);
         const category_id = req.body.category_id !== undefined ? (req.body.category_id || null) : (existing.category_id ?? null);
         const account_id = req.body.account_id !== undefined ? (req.body.account_id || null) : (existing.account_id ?? null);
+        
+        const emoji = req.body.emoji || existing.emoji;
+        const color = req.body.color || existing.color;
+        const status = req.body.status || existing.status;
+        const notes = req.body.notes !== undefined ? req.body.notes : existing.notes;
+        const target_date = req.body.target_date || existing.target_date;
+        const start_date = req.body.start_date || existing.start_date;
+        const type = req.body.type || existing.type;
+        const tracking_mode = req.body.tracking_mode || existing.tracking_mode;
+        const carry_forward = req.body.carry_forward !== undefined ? req.body.carry_forward : existing.carry_forward;
+        const linked_account = req.body.linked_account || existing.linked_account;
 
         if (!name || !Number.isFinite(target_amount) || target_amount <= 0) {
             return res.status(400).json({ error: 'Valid name and target amount are required' });
         }
 
         await pool.query(
-            'UPDATE savings_goals SET name=$1, target_amount=$2, current_amount=$3, category_id=$4, account_id=$5 WHERE id=$6 AND user_id=$7',
-            [name, target_amount, current_amount, category_id, account_id, req.params.id, req.userId]
+            `UPDATE savings_goals 
+             SET name=$1, target_amount=$2, current_amount=$3, category_id=$4, account_id=$5,
+                 emoji=$6, color=$7, status=$8, notes=$9, target_date=$10, start_date=$11, type=$12,
+                 tracking_mode=$13, carry_forward=$14, linked_account=$15
+             WHERE id=$16 AND user_id=$17`,
+            [name, target_amount, current_amount, category_id, account_id,
+             emoji, color, status, notes, target_date, start_date, type,
+             tracking_mode, carry_forward, linked_account,
+             req.params.id, req.userId]
         );
 
         const { rows } = await pool.query('SELECT * FROM savings_goals WHERE id = $1', [req.params.id]);
@@ -182,7 +219,7 @@ router.put('/:id', async (req, res) => {
 // POST /api/savings-goals/:id/record — manually add savings
 router.post('/:id/record', async (req, res) => {
     try {
-        const { amount } = req.body;
+        const { amount, note, account_id } = req.body;
         const parsed = parseFloat(amount);
         if (!Number.isFinite(parsed) || parsed <= 0) {
             return res.status(400).json({ error: 'A positive amount is required' });
@@ -196,10 +233,25 @@ router.post('/:id/record', async (req, res) => {
         const existing = existingRows[0];
         const newAmount = parseFloat(existing.current_amount || 0) + parsed;
 
-        await pool.query(
-            'UPDATE savings_goals SET current_amount = $1 WHERE id = $2 AND user_id = $3',
-            [newAmount, req.params.id, req.userId]
-        );
+        await pool.query('BEGIN');
+        try {
+            await pool.query(
+                'UPDATE savings_goals SET current_amount = $1 WHERE id = $2 AND user_id = $3',
+                [newAmount, req.params.id, req.userId]
+            );
+            
+            const contribId = uuidv4();
+            await pool.query(
+                `INSERT INTO savings_goals_contributions (id, goal_id, user_id, amount, date, note, from_account_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [contribId, req.params.id, req.userId, parsed, new Date().toISOString().split('T')[0], note || null, account_id || null]
+            );
+            
+            await pool.query('COMMIT');
+        } catch(err) {
+            await pool.query('ROLLBACK');
+            throw err;
+        }
 
         const { rows } = await pool.query('SELECT * FROM savings_goals WHERE id = $1', [req.params.id]);
         const g = rows[0];

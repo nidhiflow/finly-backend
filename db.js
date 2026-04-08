@@ -82,6 +82,27 @@ async function initDB() {
             target_amount NUMERIC NOT NULL,
             current_amount NUMERIC DEFAULT 0,
             month TEXT, -- optional YYYY-MM for monthly goals
+            emoji TEXT DEFAULT '🎯',
+            color TEXT DEFAULT '#7C5CFF',
+            status TEXT DEFAULT 'active',
+            notes TEXT,
+            target_date TEXT,
+            start_date TEXT,
+            type TEXT DEFAULT 'one-time',
+            tracking_mode TEXT DEFAULT 'Manual',
+            carry_forward BOOLEAN DEFAULT false,
+            linked_account TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS savings_goals_contributions (
+            id TEXT PRIMARY KEY,
+            goal_id TEXT REFERENCES savings_goals(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            amount NUMERIC NOT NULL,
+            date TEXT NOT NULL,
+            note TEXT,
+            from_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
             created_at TIMESTAMP DEFAULT NOW()
         );
 
@@ -157,6 +178,26 @@ async function initDB() {
     }
   } catch (e) {
     console.warn('Savings goals migration skip or error:', e.message);
+  }
+
+  // Migration: add extended fields to savings_goals if missing (existing DBs)
+  try {
+    const { rows: sgColsExtended } = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'savings_goals' AND column_name = 'emoji'");
+    if (sgColsExtended.length === 0) {
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN emoji TEXT DEFAULT '🎯'");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN color TEXT DEFAULT '#7C5CFF'");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN status TEXT DEFAULT 'active'");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN notes TEXT");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN target_date TEXT");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN start_date TEXT");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN type TEXT DEFAULT 'one-time'");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN tracking_mode TEXT DEFAULT 'Manual'");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN carry_forward BOOLEAN DEFAULT false");
+      await pool.query("ALTER TABLE savings_goals ADD COLUMN linked_account TEXT");
+      console.log('✅ Migrated savings_goals table (extended fields)');
+    }
+  } catch (e) {
+    console.warn('Savings goals extended migration skip or error:', e.message);
   }
 
   console.log('✅ Database schema initialized');
